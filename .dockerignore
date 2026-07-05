@@ -1,0 +1,6 @@
+data
+temp
+webui/node_modules
+webui/dist
+*.exe
+*.db

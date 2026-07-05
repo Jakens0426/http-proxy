@@ -1,0 +1,13 @@
+# Runtime data and local state
+data/
+temp/
+subscriptions.json
+
+# Frontend dependencies and build output
+webui/node_modules/
+webui/dist/
+
+# Generated binaries, databases, and logs
+*.exe
+*.db
+*.log

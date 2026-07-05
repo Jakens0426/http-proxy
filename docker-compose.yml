@@ -1,0 +1,11 @@
+services:
+  http-proxy:
+    build: .
+    container_name: http-proxy
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
