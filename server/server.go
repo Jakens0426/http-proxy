@@ -179,7 +179,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if s.ui == nil {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(200)
-		w.Write([]byte(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>HTTP 代理管理器</title></head><body><div id="app">Web UI is not embedded. Run npm --prefix webui run build before packaging.</div></body></html>`))
+		w.Write([]byte(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>代理中转器</title></head><body><div id="app">Web UI is not embedded. Run npm --prefix webui run build before packaging.</div></body></html>`))
 		return
 	}
 

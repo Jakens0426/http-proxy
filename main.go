@@ -28,13 +28,13 @@ func main() {
 		os.Exit(0)
 	}
 	if *helpFlag {
-		fmt.Println("HTTP Proxy Manager — embedded sing-box proxy pool")
+		fmt.Println("代理中转器 - embedded sing-box proxy pool")
 		fmt.Println()
 		fmt.Println("Usage: http-proxy [options]")
 		fmt.Println()
 		flag.PrintDefaults()
 		fmt.Println()
-		fmt.Println("Management UI: http://127.0.0.1:9090")
+		fmt.Println("代理中转器 UI: http://127.0.0.1:9090")
 		os.Exit(0)
 	}
 
@@ -58,6 +58,6 @@ func main() {
 
 	srv := server.NewServer(svc, distFS)
 	addr := "127.0.0.1:9090"
-	log.Printf("Management UI: http://%s", addr)
+	log.Printf("代理中转器 UI: http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, srv))
 }

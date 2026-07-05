@@ -1,4 +1,4 @@
-# HTTP Proxy Manager v2 — 重构计划
+# 代理中转器 v2 — 重构计划
 
 > 当前实现已将运行数据迁移到 SQLite：默认数据库为 `data/http-proxy.db`，
 > 保存订阅、解析后的代理、应用配置和测速结果。下文中关于

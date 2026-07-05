@@ -2,9 +2,9 @@
   <section v-if="!initialized" class="auth-screen">
     <div class="auth-card">
       <div class="brand auth-brand">
-        <div class="brand-mark">HP</div>
+        <div class="brand-mark">转</div>
         <div>
-          <h1>HTTP 代理管理器</h1>
+          <h1>代理中转器</h1>
           <p>sing-box proxy pool</p>
         </div>
       </div>
@@ -15,9 +15,9 @@
   <section v-else-if="authRequired" class="auth-screen">
     <form class="auth-card" @submit.prevent="handleLogin">
       <div class="brand auth-brand">
-        <div class="brand-mark">HP</div>
+        <div class="brand-mark">转</div>
         <div>
-          <h1>HTTP 代理管理器</h1>
+          <h1>代理中转器</h1>
           <p>sing-box proxy pool</p>
         </div>
       </div>
@@ -31,13 +31,15 @@
     </form>
   </section>
 
-  <div v-else class="app-shell">
+  <div v-else class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark">HP</div>
-        <div>
-          <h1>HTTP 代理管理器</h1>
-          <p>sing-box proxy pool</p>
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-mark">转</div>
+          <div class="brand-text">
+            <h1>代理中转器</h1>
+            <p>sing-box proxy pool</p>
+          </div>
         </div>
       </div>
 
@@ -48,12 +50,25 @@
           class="nav-item"
           :class="{ active: activeTab === tab.id }"
           type="button"
-          @click="selectTab(tab.id)"
+          :title="tab.label"
+          :aria-label="tab.label"
+          :aria-current="activeTab === tab.id ? 'page' : undefined"
+          @click="navigateToTab(tab.id)"
         >
           <span class="nav-icon">{{ tab.icon }}</span>
-          <span>{{ tab.label }}</span>
+          <span class="nav-label">{{ tab.label }}</span>
         </button>
       </nav>
+
+      <button
+        class="sidebar-toggle"
+        type="button"
+        :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+        :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+        @click="toggleSidebar"
+      >
+        <span aria-hidden="true">{{ sidebarCollapsed ? '›' : '‹' }}</span>
+      </button>
     </aside>
 
     <main class="workspace">
@@ -62,9 +77,9 @@
           <p class="eyebrow">{{ activeTabLabel }}</p>
           <h2>{{ activeTabTitle }}</h2>
         </div>
-        <button class="button ghost" type="button" :disabled="loading.refreshAll" @click="refreshAll">
+        <button v-if="canRefreshActiveTab" class="button ghost" type="button" :disabled="loading.refreshPage" @click="refreshCurrentPage">
           <span aria-hidden="true">↻</span>
-          <span>{{ loading.refreshAll ? '刷新中' : '刷新' }}</span>
+          <span>{{ loading.refreshPage ? '刷新中' : '刷新' }}</span>
         </button>
       </header>
 
@@ -426,7 +441,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   addSubscription,
   clearRequestLogs,
@@ -450,14 +465,19 @@ import {
 } from './api'
 
 const tabs = [
-  { id: 'subscriptions', label: '订阅', title: '订阅管理', icon: '＋' },
-  { id: 'proxies', label: '节点', title: '代理列表', icon: '◎' },
-  { id: 'pool', label: '代理池', title: '代理池', icon: '▦' },
-  { id: 'logs', label: '日志', title: '诊断日志', icon: '≡' },
-  { id: 'requestLogs', label: '请求', title: '代理请求日志', icon: '↗' },
-  { id: 'help', label: '帮助', title: 'API 参考', icon: '?' },
-  { id: 'settings', label: '设置', title: '运行设置', icon: '⚙' }
+  { id: 'subscriptions', path: '/subscriptions', label: '订阅', title: '订阅管理', icon: '＋' },
+  { id: 'proxies', path: '/proxies', label: '节点', title: '代理列表', icon: '◎' },
+  { id: 'pool', path: '/pool', label: '代理池', title: '代理池', icon: '▦' },
+  { id: 'logs', path: '/logs', label: '日志', title: '诊断日志', icon: '≡' },
+  { id: 'requestLogs', path: '/request-logs', label: '请求', title: '代理请求日志', icon: '↗' },
+  { id: 'help', path: '/help', label: '帮助', title: 'API 参考', icon: '?' },
+  { id: 'settings', path: '/settings', label: '设置', title: '运行设置', icon: '⚙' }
 ]
+
+const DEFAULT_TAB_ID = 'subscriptions'
+const SIDEBAR_COLLAPSED_KEY = 'http-proxy-sidebar-collapsed'
+const tabsById = Object.fromEntries(tabs.map((tab) => [tab.id, tab]))
+const tabsByPath = Object.fromEntries(tabs.map((tab) => [tab.path, tab]))
 
 const apiEndpoints = [
   {
@@ -588,7 +608,8 @@ const apiEndpoints = [
   }
 ]
 
-const activeTab = ref('subscriptions')
+const activeTab = ref(tabIdFromCurrentPath())
+const sidebarCollapsed = ref(readSidebarCollapsed())
 const subscriptionURL = ref('')
 const subscriptions = ref([])
 const proxies = ref([])
@@ -617,7 +638,7 @@ const config = reactive({
 
 const loading = reactive({
   login: false,
-  refreshAll: false,
+  refreshPage: false,
   addSubscription: false,
   pool: false,
   stopPool: false,
@@ -634,17 +655,26 @@ const proxyTesting = reactive({})
 
 const activeTabTitle = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.title || '')
 const activeTabLabel = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.label || '')
+const canRefreshActiveTab = computed(() => activeTab.value !== 'help')
 const healthyProxyCount = computed(() => proxies.value.filter((proxy) => !proxy.err && proxy.latency >= 0 && proxy.latency < 500).length)
 
-onMounted(initializeApp)
+onMounted(() => {
+  window.addEventListener('popstate', handlePopState)
+  initializeApp()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('popstate', handlePopState)
+})
 
 async function initializeApp() {
-  loading.refreshAll = true
+  activeTab.value = tabIdFromCurrentPath()
+  loading.refreshPage = canRefreshActiveTab.value
   try {
     await loadConfig()
     authRequired.value = false
     initialized.value = true
-    await loadDashboardData()
+    await loadCurrentPageData(activeTab.value)
   } catch (error) {
     if (isForbidden(error)) {
       requireLogin(false)
@@ -653,12 +683,8 @@ async function initializeApp() {
     initialized.value = true
     notify(error.message, 'error')
   } finally {
-    loading.refreshAll = false
+    loading.refreshPage = false
   }
-}
-
-async function loadDashboardData() {
-  await Promise.all([loadSubscriptions(), loadProxies(), loadPoolStatus(), loadLogs(), loadRequestLogDates()])
 }
 
 async function handleLogin() {
@@ -671,7 +697,7 @@ async function handleLogin() {
   try {
     await loadConfig()
     authRequired.value = false
-    await loadDashboardData()
+    await loadCurrentPageData(activeTab.value)
     notify('已登录', 'success')
   } catch (error) {
     if (isForbidden(error)) {
@@ -686,15 +712,15 @@ async function handleLogin() {
   }
 }
 
-async function refreshAll() {
-  loading.refreshAll = true
+async function refreshCurrentPage() {
+  if (!canRefreshActiveTab.value) return
+  loading.refreshPage = true
   try {
-    await loadConfig()
-    await loadDashboardData()
+    await loadCurrentPageData(activeTab.value)
   } catch (error) {
     notifyRequestError(error, '刷新失败：')
   } finally {
-    loading.refreshAll = false
+    loading.refreshPage = false
   }
 }
 
@@ -747,21 +773,114 @@ async function loadRequestLogs() {
   clearExpandedRequestLogs()
 }
 
+async function loadRequestLogPageData() {
+  await loadRequestLogDates()
+  await loadRequestLogs()
+}
+
+async function loadCurrentPageData(tabId = activeTab.value) {
+  switch (tabId) {
+    case 'subscriptions':
+      await Promise.all([loadSubscriptions(), loadProxies()])
+      return
+    case 'proxies':
+      await loadProxies()
+      return
+    case 'pool':
+      await Promise.all([loadPoolStatus(), loadConfig()])
+      return
+    case 'logs':
+      await loadLogs()
+      return
+    case 'requestLogs':
+      await loadRequestLogPageData()
+      return
+    case 'settings':
+      await loadConfig()
+      return
+    case 'help':
+      return
+    default:
+      await Promise.all([loadSubscriptions(), loadProxies()])
+  }
+}
+
+async function loadPageAfterNavigation(tabId) {
+  if (!initialized.value || authRequired.value) return
+  loading.refreshPage = tabId !== 'help'
+  try {
+    await loadCurrentPageData(tabId)
+  } catch (error) {
+    notifyRequestError(error, '加载失败：')
+  } finally {
+    loading.refreshPage = false
+  }
+}
+
 function refreshLogsQuietly() {
   loadLogs().catch(() => {})
 }
 
 function refreshRequestLogsQuietly() {
-  Promise.all([loadRequestLogDates(), loadRequestLogs()]).catch(() => {})
+  loadRequestLogPageData().catch(() => {})
 }
 
-function selectTab(id) {
-  activeTab.value = id
-  if (id === 'logs') {
-    refreshLogsQuietly()
+function navigateToTab(id) {
+  const tab = tabsById[id] || tabsById[DEFAULT_TAB_ID]
+  if (currentPath() !== tab.path) {
+    window.history.pushState({ tab: tab.id }, '', tab.path)
   }
-  if (id === 'requestLogs') {
-    refreshRequestLogsQuietly()
+  activeTab.value = tab.id
+  loadPageAfterNavigation(tab.id)
+}
+
+function handlePopState() {
+  const tabId = tabIdFromCurrentPath()
+  activeTab.value = tabId
+  loadPageAfterNavigation(tabId)
+}
+
+function tabIdFromCurrentPath() {
+  const path = currentPath()
+  if (path === '/') {
+    replaceCurrentPath(tabsById[DEFAULT_TAB_ID].path)
+    return DEFAULT_TAB_ID
+  }
+  const tab = tabsByPath[path]
+  if (tab) {
+    return tab.id
+  }
+  replaceCurrentPath(tabsById[DEFAULT_TAB_ID].path)
+  return DEFAULT_TAB_ID
+}
+
+function currentPath() {
+  const pathname = window.location.pathname || '/'
+  if (pathname.length > 1) {
+    return pathname.replace(/\/+$/, '')
+  }
+  return pathname
+}
+
+function replaceCurrentPath(path) {
+  const suffix = `${window.location.search || ''}${window.location.hash || ''}`
+  window.history.replaceState({ tab: tabsByPath[path]?.id || DEFAULT_TAB_ID }, '', `${path}${suffix}`)
+}
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed.value ? '1' : '0')
+  } catch {
+    // Ignore unavailable local storage.
+  }
+}
+
+function readSidebarCollapsed() {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
   }
 }
 
@@ -920,8 +1039,7 @@ async function handleClearLogs() {
 async function handleRefreshRequestLogs() {
   loading.requestLogs = true
   try {
-    await loadRequestLogs()
-    await loadRequestLogDates()
+    await loadRequestLogPageData()
   } catch (error) {
     notifyRequestError(error, '刷新代理请求日志失败：')
   } finally {

@@ -1,4 +1,4 @@
-# HTTP Proxy Manager
+# 代理中转器
 
 嵌入式 sing-box 代理池：将 VLESS/Trojan/SS 订阅转成本地 HTTP 代理，零子进程。
 
