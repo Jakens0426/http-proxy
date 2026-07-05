@@ -453,6 +453,10 @@ table {
   font-size: 14px;
 }
 
+.proxies-table {
+  min-width: 940px;
+}
+
 th,
 td {
   padding: 11px 12px;
@@ -563,6 +567,32 @@ tbody tr:last-child td {
 
 .request-logs-table {
   min-width: 1160px;
+}
+
+.pool-status-strip {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.pool-status-strip span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 1px solid #e2e7ee;
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #3a4654;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.pool-status-strip strong {
+  color: #6d7785;
+  font-size: 12px;
 }
 
 .api-table {
@@ -748,21 +778,59 @@ tbody tr:last-child td {
 }
 
 .settings-panel {
-  max-width: 980px;
+  width: 100%;
   overflow: auto;
 }
 
+.settings-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.settings-section {
+  display: flex;
+  align-items: flex-start;
+  gap: 22px;
+  padding: 18px 0;
+  border-top: 1px solid #e2e7ee;
+}
+
+.settings-section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-section h4 {
+  flex: 0 0 150px;
+  margin: 0;
+  padding-top: 8px;
+  color: #20242b;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
 .settings-grid {
-  display: grid;
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   gap: 14px;
+  min-width: 0;
 }
 
 .settings-grid label {
-  display: grid;
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
   gap: 7px;
+  min-width: min(260px, 100%);
   color: #4b5563;
   font-size: 13px;
   font-weight: 700;
+}
+
+.settings-section:nth-child(3) .settings-grid label:nth-child(-n + 2) {
+  flex-basis: 420px;
 }
 
 .form-actions {
@@ -868,6 +936,20 @@ tbody tr:last-child td {
     flex-direction: column;
   }
 
+  .settings-section {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .settings-section h4 {
+    flex: none;
+    padding-top: 0;
+  }
+
+  .settings-grid {
+    width: 100%;
+  }
+
   .actions {
     text-align: left;
   }
@@ -875,7 +957,24 @@ tbody tr:last-child td {
 
 @media (max-width: 520px) {
   .metrics-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .metric {
+    min-height: 52px;
+    padding: 10px 12px;
+  }
+
+  .metric span {
+    font-size: 12px;
+  }
+
+  .metric strong {
+    margin-top: 2px;
+    font-size: 20px;
+    line-height: 1.15;
   }
 
   .topbar {

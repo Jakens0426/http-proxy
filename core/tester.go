@@ -238,6 +238,141 @@ func (t *Tester) TestOne(tag string) *TestResult {
 	return result
 }
 
+func (t *Tester) TestProxies(proxies []*ProxyInfo) map[string]*TestResult {
+	return t.testProxies(proxies, 0, TestConcurrency)
+}
+
+func (t *Tester) TestProxiesWithBudget(proxies []*ProxyInfo, budget time.Duration) map[string]*TestResult {
+	return t.testProxies(proxies, budget, QuickTestConcurrency)
+}
+
+func (t *Tester) TestProxiesWithConcurrency(proxies []*ProxyInfo, concurrency int) map[string]*TestResult {
+	return t.testProxies(proxies, 0, concurrency)
+}
+
+func (t *Tester) TestProxiesWithBudgetAndConcurrency(proxies []*ProxyInfo, budget time.Duration, concurrency int) map[string]*TestResult {
+	return t.testProxies(proxies, budget, concurrency)
+}
+
+func (t *Tester) testProxies(proxies []*ProxyInfo, budget time.Duration, concurrency int) map[string]*TestResult {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	results := make(map[string]*TestResult)
+	if len(proxies) == 0 {
+		return results
+	}
+	if t.box == nil {
+		now := time.Now()
+		for _, proxy := range proxies {
+			if proxy == nil || proxy.Tag == "" {
+				continue
+			}
+			result := &TestResult{
+				Tag:       proxy.Tag,
+				Err:       "tester unavailable",
+				Timestamp: now,
+			}
+			results[proxy.Tag] = result
+		}
+		for tag, result := range results {
+			t.cache[tag] = result
+		}
+		t.persistResults(results)
+		return results
+	}
+
+	target := t.testTarget
+	configuredTimeout := t.testTimeoutLocked()
+	var deadline time.Time
+	if budget > 0 {
+		deadline = time.Now().Add(budget)
+	}
+	if concurrency <= 0 {
+		if budget > 0 {
+			concurrency = QuickTestConcurrency
+		} else {
+			concurrency = TestConcurrency
+		}
+	}
+	if concurrency > len(proxies) {
+		concurrency = len(proxies)
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for _, proxy := range proxies {
+		if proxy == nil || proxy.Tag == "" {
+			continue
+		}
+		timeout := configuredTimeout
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				break
+			}
+			select {
+			case sem <- struct{}{}:
+			case <-time.After(remaining):
+				goto wait
+			}
+			remaining = time.Until(deadline)
+			if remaining <= 0 {
+				<-sem
+				break
+			}
+			if timeout > remaining {
+				timeout = remaining
+			}
+			if timeout > outboundProbeInterval {
+				timeout = (timeout - outboundProbeInterval) / 2
+			}
+		} else {
+			sem <- struct{}{}
+		}
+		if timeout <= 0 {
+			<-sem
+			break
+		}
+
+		tag := proxy.Tag
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			latency, err := t.testTag(tag, target, timeout)
+			result := &TestResult{
+				Tag:       tag,
+				Timestamp: time.Now(),
+			}
+			if err != nil {
+				result.Err = err.Error()
+			} else {
+				result.Latency = latency
+			}
+
+			mu.Lock()
+			results[tag] = result
+			mu.Unlock()
+		}()
+	}
+
+wait:
+	wg.Wait()
+
+	for tag, result := range results {
+		t.cache[tag] = result
+	}
+	t.persistResults(results)
+	return results
+}
+
 func (t *Tester) Rebuild(proxies []*ProxyInfo) error {
 	return t.RebuildWithUpstream(proxies, "")
 }

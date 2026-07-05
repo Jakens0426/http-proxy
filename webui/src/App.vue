@@ -160,7 +160,7 @@
         </div>
 
         <div class="table-wrap">
-          <table>
+          <table class="proxies-table">
             <thead>
               <tr>
                 <th>协议</th>
@@ -169,6 +169,7 @@
                 <th>端口</th>
                 <th>TLS</th>
                 <th>延迟</th>
+                <th>测速有效期</th>
                 <th class="actions">操作</th>
               </tr>
             </thead>
@@ -180,6 +181,7 @@
                 <td>{{ proxy.port }}</td>
                 <td><span class="badge subtle">{{ proxy.tls || 'none' }}</span></td>
                 <td :class="latencyClass(proxy)">{{ latencyText(proxy) }}</td>
+                <td :class="testTTLClass(proxy)">{{ testTTLText(proxy) }}</td>
                 <td class="actions">
                   <button class="button small" type="button" :disabled="!proxy.share_url" @click="copyShareURL(proxy)">
                     复制链接
@@ -208,6 +210,18 @@
             </button>
             <button class="button danger" type="button" :disabled="loading.stopPool" @click="handleStopPool">停止全部</button>
           </div>
+        </div>
+
+        <div class="pool-status-strip">
+          <span><strong>阶段</strong>{{ availableStageText }}</span>
+          <span><strong>候选池</strong>{{ availableStatus.candidate_count || 0 }}</span>
+          <span><strong>待测</strong>{{ availableStatus.pending || 0 }}</span>
+          <span><strong>已测</strong>{{ availableStatus.tested || 0 }}</span>
+          <span><strong>健康</strong>{{ availableStatus.healthy || 0 }}</span>
+          <span><strong>失败</strong>{{ availableStatus.failed || 0 }}</span>
+          <span><strong>缓存 TTL</strong>{{ formatSeconds(availableStatus.available_cache_ttl_seconds) }}</span>
+          <span><strong>测速 TTL</strong>{{ formatSeconds(availableStatus.test_result_ttl_seconds) }}</span>
+          <span v-if="availableStatus.last_error" class="bad"><strong>错误</strong>{{ availableStatus.last_error }}</span>
         </div>
 
         <div class="table-wrap">
@@ -392,35 +406,82 @@
           </div>
         </div>
 
-        <div class="settings-grid">
-          <label>
-            <span>管理 Token</span>
-            <input v-model.trim="config.admin_token" type="password" autocomplete="new-password" />
-          </label>
-          <label>
-            <span>Available Token</span>
-            <input v-model.trim="config.available_token" type="password" autocomplete="new-password" />
-          </label>
-          <label>
-            <span>代理池用户名</span>
-            <input v-model.trim="config.pool_proxy_username" type="text" autocomplete="username" />
-          </label>
-          <label>
-            <span>代理池密码</span>
-            <input v-model.trim="config.pool_proxy_password" type="password" autocomplete="new-password" />
-          </label>
-          <label>
-            <span>上游代理</span>
-            <input v-model.trim="config.upstream_proxy" type="text" placeholder="http://... / socks5://... / ss://... / vless://... / trojan://..." />
-          </label>
-          <label>
-            <span>测试目标</span>
-            <input v-model.trim="config.test_target" type="url" placeholder="https://www.gstatic.com/generate_204" />
-          </label>
-          <label>
-            <span>测试超时（秒）</span>
-            <input v-model.number="config.test_timeout_seconds" type="number" min="1" max="60" />
-          </label>
+        <div class="settings-sections">
+          <section class="settings-section">
+            <h4>鉴权</h4>
+            <div class="settings-grid">
+              <label>
+                <span>管理 Token</span>
+                <input v-model.trim="config.admin_token" type="password" autocomplete="new-password" />
+              </label>
+              <label>
+                <span>Available Token</span>
+                <input v-model.trim="config.available_token" type="password" autocomplete="new-password" />
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h4>代理池认证</h4>
+            <div class="settings-grid">
+              <label>
+                <span>代理池用户名</span>
+                <input v-model.trim="config.pool_proxy_username" type="text" autocomplete="username" />
+              </label>
+              <label>
+                <span>代理池密码</span>
+                <input v-model.trim="config.pool_proxy_password" type="password" autocomplete="new-password" />
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h4>测速</h4>
+            <div class="settings-grid">
+              <label>
+                <span>上游代理</span>
+                <input v-model.trim="config.upstream_proxy" type="text" placeholder="http://... / socks5://... / ss://... / vless://... / trojan://..." />
+              </label>
+              <label>
+                <span>测试目标</span>
+                <input v-model.trim="config.test_target" type="url" placeholder="https://www.gstatic.com/generate_204" />
+              </label>
+              <label>
+                <span>测试超时（秒）</span>
+                <input v-model.number="config.test_timeout_seconds" type="number" min="1" max="60" />
+              </label>
+              <label>
+                <span>测速结果 TTL（分钟）</span>
+                <input v-model.number="config.test_result_ttl_minutes" type="number" min="5" max="1440" />
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h4>Available 刷新策略</h4>
+            <div class="settings-grid">
+              <label>
+                <span>缓存 TTL（秒）</span>
+                <input v-model.number="config.available_cache_ttl_seconds" type="number" min="10" max="3600" />
+              </label>
+              <label>
+                <span>快速探测预算（秒）</span>
+                <input v-model.number="config.available_quick_probe_seconds" type="number" min="1" max="10" />
+              </label>
+              <label>
+                <span>快速探测并发</span>
+                <input v-model.number="config.available_quick_concurrency" type="number" min="1" max="50" />
+              </label>
+              <label>
+                <span>后台刷新并发</span>
+                <input v-model.number="config.available_background_concurrency" type="number" min="1" max="20" />
+              </label>
+              <label>
+                <span>最小暖池数量</span>
+                <input v-model.number="config.available_min_warm_pool_size" type="number" min="1" max="100" />
+              </label>
+            </div>
+          </section>
         </div>
 
         <div class="form-actions">
@@ -448,6 +509,7 @@ import {
   clearLogs,
   deleteSubscription,
   getAvailableProxies,
+  getAvailableStatus,
   getAdminToken,
   getConfig,
   getPoolStatus,
@@ -513,7 +575,7 @@ const apiEndpoints = [
     path: '/api/proxies',
     purpose: '获取全部已解析代理及缓存测速结果。',
     params: '无',
-    response: '200 ProxyView[]，字段含 name、server、port、protocol、tag、tls、latency、err、share_url。'
+    response: '200 ProxyView[]，字段含 name、server、port、latency、err、test_timestamp、test_ttl_remaining_seconds、test_expired。'
   },
   {
     method: 'POST',
@@ -544,6 +606,13 @@ const apiEndpoints = [
     response: '200 {"instances":[PoolInstanceStatus],"count":N}。'
   },
   {
+    method: 'GET',
+    path: '/api/pool/available/status',
+    purpose: '获取 available 候选池和刷新进度。',
+    params: '无',
+    response: '200 AvailableStatus，字段含 stage、candidate_count、pending、tested、healthy、failed、last_error。'
+  },
+  {
     method: 'POST',
     path: '/api/pool/stop',
     purpose: '停止所有代理池实例。',
@@ -561,7 +630,7 @@ const apiEndpoints = [
     method: 'PUT',
     path: '/api/config',
     purpose: '更新运行配置。',
-    params: '{"admin_token":"...","available_token":"...","pool_proxy_username":"...","pool_proxy_password":"..."}',
+    params: '{"admin_token":"...","available_token":"...","available_cache_ttl_seconds":30,"test_result_ttl_minutes":120}',
     response: '200 {"message":"config updated"}；400 invalid JSON / 配置错误；403 forbidden；500 error。'
   },
   {
@@ -615,6 +684,20 @@ const subscriptions = ref([])
 const proxies = ref([])
 const poolRows = ref([])
 const poolStatus = ref({ count: 0, instances: [] })
+const availableStatus = ref({
+  stage: 'idle',
+  candidate_count: 0,
+  quick_refreshing: false,
+  background_refreshing: false,
+  total: 0,
+  pending: 0,
+  tested: 0,
+  healthy: 0,
+  failed: 0,
+  available_cache_ttl_seconds: 30,
+  test_result_ttl_seconds: 7200,
+  last_error: ''
+})
 const diagnosticLogs = ref([])
 const requestLogs = ref([])
 const requestLogDates = ref([])
@@ -633,7 +716,13 @@ const config = reactive({
   admin_token: '',
   available_token: '',
   pool_proxy_username: '',
-  pool_proxy_password: ''
+  pool_proxy_password: '',
+  available_cache_ttl_seconds: 30,
+  test_result_ttl_minutes: 120,
+  available_quick_probe_seconds: 1,
+  available_quick_concurrency: 10,
+  available_background_concurrency: 3,
+  available_min_warm_pool_size: 20
 })
 
 const loading = reactive({
@@ -657,6 +746,7 @@ const activeTabTitle = computed(() => tabs.find((tab) => tab.id === activeTab.va
 const activeTabLabel = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.label || '')
 const canRefreshActiveTab = computed(() => activeTab.value !== 'help')
 const healthyProxyCount = computed(() => proxies.value.filter((proxy) => !proxy.err && proxy.latency >= 0 && proxy.latency < 500).length)
+const availableStageText = computed(() => availableStageLabel(availableStatus.value.stage))
 
 onMounted(() => {
   window.addEventListener('popstate', handlePopState)
@@ -740,6 +830,11 @@ async function loadPoolStatus() {
   poolRows.value = Array.isArray(poolStatus.value.instances) ? poolStatus.value.instances : []
 }
 
+async function loadAvailableStatus() {
+  const status = await getAvailableStatus()
+  availableStatus.value = status || availableStatus.value
+}
+
 async function loadConfig() {
   const data = await getConfig()
   config.upstream_proxy = data.upstream_proxy || ''
@@ -749,6 +844,12 @@ async function loadConfig() {
   config.available_token = data.available_token || ''
   config.pool_proxy_username = data.pool_proxy_username || ''
   config.pool_proxy_password = data.pool_proxy_password || ''
+  config.available_cache_ttl_seconds = data.available_cache_ttl_seconds || 30
+  config.test_result_ttl_minutes = data.test_result_ttl_minutes || 120
+  config.available_quick_probe_seconds = data.available_quick_probe_seconds || 1
+  config.available_quick_concurrency = data.available_quick_concurrency || 10
+  config.available_background_concurrency = data.available_background_concurrency || 3
+  config.available_min_warm_pool_size = data.available_min_warm_pool_size || 20
 }
 
 async function loadLogs() {
@@ -787,7 +888,7 @@ async function loadCurrentPageData(tabId = activeTab.value) {
       await loadProxies()
       return
     case 'pool':
-      await Promise.all([loadPoolStatus(), loadConfig()])
+      await Promise.all([loadPoolStatus(), loadAvailableStatus(), loadConfig()])
       return
     case 'logs':
       await loadLogs()
@@ -938,6 +1039,11 @@ async function handleTestProxy(proxy) {
     const result = await testProxy(proxy.tag)
     proxy.latency = result.latency
     proxy.err = result.err || ''
+    proxy.test_timestamp = result.timestamp || new Date().toISOString()
+    proxy.test_age_seconds = 0
+    proxy.test_ttl_seconds = proxy.test_ttl_seconds || Number(config.test_result_ttl_minutes || 120) * 60
+    proxy.test_ttl_remaining_seconds = proxy.test_ttl_seconds
+    proxy.test_expired = false
     notify(proxy.err ? `测试失败：${proxy.err}` : `测试完成：${proxy.latency}ms`, proxy.err ? 'error' : 'success')
   } catch (error) {
     notifyRequestError(error, '测试失败：')
@@ -985,7 +1091,7 @@ async function handleRefreshPool() {
   try {
     const data = await getAvailableProxies(poolCount.value || 5, config.available_token.trim())
     poolRows.value = Array.isArray(data.proxies) ? data.proxies : []
-    await loadPoolStatus()
+    await Promise.all([loadPoolStatus(), loadAvailableStatus()])
     notify(`已更新 ${data.count || poolRows.value.length} 个代理`, 'success')
   } catch (error) {
     notify(`刷新失败：${error.message}`, 'error')
@@ -1002,6 +1108,7 @@ async function handleStopPool() {
     await stopPool()
     poolRows.value = []
     poolStatus.value = { count: 0, instances: [] }
+    await loadAvailableStatus()
     notify('代理池已停止', 'success')
   } catch (error) {
     notifyRequestError(error, '停止失败：')
@@ -1091,10 +1198,20 @@ async function handleSaveConfig() {
       admin_token: config.admin_token.trim(),
       available_token: config.available_token.trim(),
       pool_proxy_username: config.pool_proxy_username.trim(),
-      pool_proxy_password: config.pool_proxy_password.trim()
+      pool_proxy_password: config.pool_proxy_password.trim(),
+      available_cache_ttl_seconds: Number(config.available_cache_ttl_seconds) || 30,
+      test_result_ttl_minutes: Number(config.test_result_ttl_minutes) || 120,
+      available_quick_probe_seconds: Number(config.available_quick_probe_seconds) || 1,
+      available_quick_concurrency: Number(config.available_quick_concurrency) || 10,
+      available_background_concurrency: Number(config.available_background_concurrency) || 3,
+      available_min_warm_pool_size: Number(config.available_min_warm_pool_size) || 20
     })
     setAdminToken(config.admin_token.trim())
     loginToken.value = getAdminToken()
+    await loadConfig()
+    if (activeTab.value === 'pool') {
+      await loadAvailableStatus()
+    }
     notify('设置已保存', 'success')
   } catch (error) {
     notifyRequestError(error, '保存失败：')
@@ -1139,6 +1256,40 @@ function latencyClass(proxy) {
   if (proxy.latency < 150) return 'good'
   if (proxy.latency < 300) return 'warn'
   return 'bad'
+}
+
+function testTTLText(proxy) {
+  if (!proxy.test_timestamp) return '未测试'
+  if (proxy.test_expired || Number(proxy.test_ttl_remaining_seconds) <= 0) return '已过期'
+  return `剩余 ${formatDurationShort(proxy.test_ttl_remaining_seconds)}`
+}
+
+function testTTLClass(proxy) {
+  if (!proxy.test_timestamp) return 'muted'
+  if (proxy.test_expired || Number(proxy.test_ttl_remaining_seconds) <= 0) return 'bad'
+  if (Number(proxy.test_ttl_remaining_seconds) < 600) return 'warn'
+  return 'good'
+}
+
+function formatDurationShort(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  if (total < 60) return '<1m'
+  if (total < 3600) return `${Math.floor(total / 60)}m`
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`
+}
+
+function formatSeconds(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  if (total < 60) return `${total}s`
+  return formatDurationShort(total)
+}
+
+function availableStageLabel(stage = '') {
+  if (stage === 'quick') return '快速探测'
+  if (stage === 'background') return '后台刷新'
+  return '空闲'
 }
 
 function logLevelLabel(level = '') {
@@ -1223,6 +1374,20 @@ function requireLogin(showMessage = true) {
   proxies.value = []
   poolRows.value = []
   poolStatus.value = { count: 0, instances: [] }
+  availableStatus.value = {
+    stage: 'idle',
+    candidate_count: 0,
+    quick_refreshing: false,
+    background_refreshing: false,
+    total: 0,
+    pending: 0,
+    tested: 0,
+    healthy: 0,
+    failed: 0,
+    available_cache_ttl_seconds: 30,
+    test_result_ttl_seconds: 7200,
+    last_error: ''
+  }
   diagnosticLogs.value = []
   requestLogs.value = []
   requestLogDates.value = []

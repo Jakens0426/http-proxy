@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -124,7 +126,7 @@ func TestConfigAPIPersistsAcrossServiceRestart(t *testing.T) {
 
 	const target = "http://example.com/probe"
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{"upstream_proxy":"socks5://127.0.0.1:1080","test_target":"`+target+`","test_timeout_seconds":9,"admin_token":"admin-token","available_token":"available-token","pool_proxy_username":"pool-user","pool_proxy_password":"pool-pass"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{"upstream_proxy":"socks5://127.0.0.1:1080","test_target":"`+target+`","test_timeout_seconds":9,"admin_token":"admin-token","available_token":"available-token","pool_proxy_username":"pool-user","pool_proxy_password":"pool-pass","available_cache_ttl_seconds":60,"test_result_ttl_minutes":300,"available_quick_probe_seconds":3,"available_quick_concurrency":15,"available_background_concurrency":5,"available_min_warm_pool_size":25}`))
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT config status = %d, want 200", rec.Code)
@@ -157,9 +159,12 @@ func TestConfigAPIPersistsAcrossServiceRestart(t *testing.T) {
 	if cfg.AdminToken != "admin-token" || cfg.AvailableToken != "available-token" || cfg.PoolProxyUsername != "pool-user" || cfg.PoolProxyPassword != "pool-pass" {
 		t.Fatalf("auth config = %+v, want persisted auth values", cfg)
 	}
+	if cfg.AvailableCacheTTLSeconds != 60 || cfg.TestResultTTLMinutes != 300 || cfg.AvailableQuickProbeSeconds != 3 || cfg.AvailableQuickConcurrency != 15 || cfg.AvailableBackgroundConcurrency != 5 || cfg.AvailableMinWarmPoolSize != 25 {
+		t.Fatalf("available config = %+v, want persisted available values", cfg)
+	}
 }
 
-func TestAvailableCacheIgnoresStalePoolAuthConfig(t *testing.T) {
+func TestAvailableCandidatesIgnoreStalePoolAuthConfig(t *testing.T) {
 	store := newTestStore(t)
 	svc := NewService(core.NewSubscriptionManager(store))
 	impl := svc.(*service)
@@ -167,19 +172,25 @@ func TestAvailableCacheIgnoresStalePoolAuthConfig(t *testing.T) {
 		defer impl.tester.Close()
 	}
 
-	impl.cacheMu.Lock()
-	impl.cache = &availableCache{
-		proxies: []server.AvailableProxy{{
-			HTTP: "http://old-user:old-pass@127.0.0.1:10000",
-			Tag:  "stale",
+	impl.availableMu.Lock()
+	impl.availablePool = &availableCandidatePool{
+		entries: []availableCandidate{{
+			proxy: &core.ProxyInfo{
+				Name:     "Stale",
+				Tag:      "stale",
+				Protocol: "direct",
+			},
+			port:      10000,
+			latency:   1,
+			updatedAt: time.Now(),
 		}},
-		time: time.Now(),
 		poolConfig: poolRuntimeConfig{
 			username: "old-user",
 			password: "old-pass",
 		},
+		generation: impl.availableGeneration.Load(),
 	}
-	impl.cacheMu.Unlock()
+	impl.availableMu.Unlock()
 
 	proxies, err := impl.GetAvailableProxies(1)
 	if err != nil {
@@ -188,6 +199,311 @@ func TestAvailableCacheIgnoresStalePoolAuthConfig(t *testing.T) {
 	if len(proxies) != 0 {
 		t.Fatalf("GetAvailableProxies() = %+v, want stale cache ignored", proxies)
 	}
+}
+
+func TestAvailableCandidatesNeedRefreshUsesConfiguredCacheTTL(t *testing.T) {
+	store := newTestStore(t)
+	svc := NewService(core.NewSubscriptionManager(store))
+	impl := svc.(*service)
+	if impl.tester != nil {
+		defer impl.tester.Close()
+	}
+
+	poolConfig := impl.currentPoolRuntimeConfig()
+	impl.availableMu.Lock()
+	impl.availablePool = &availableCandidatePool{
+		entries: []availableCandidate{{
+			proxy:     &core.ProxyInfo{Name: "Fresh", Tag: "fresh", Protocol: "direct"},
+			port:      10000,
+			latency:   1,
+			updatedAt: time.Now(),
+		}},
+		updatedAt:  time.Now().Add(-20 * time.Second),
+		poolConfig: poolConfig,
+		generation: impl.availableGeneration.Load(),
+	}
+	impl.availableMu.Unlock()
+
+	now := time.Now()
+	shortTTL := availableRuntimeSettings{cacheTTL: 10 * time.Second, testResultTTL: 2 * time.Hour}
+	if !impl.availableCandidatesNeedRefresh(poolConfig, now, shortTTL) {
+		t.Fatalf("availableCandidatesNeedRefresh with short TTL = false, want true")
+	}
+	longTTL := availableRuntimeSettings{cacheTTL: 60 * time.Second, testResultTTL: 2 * time.Hour}
+	if impl.availableCandidatesNeedRefresh(poolConfig, now, longTTL) {
+		t.Fatalf("availableCandidatesNeedRefresh with long TTL = true, want false")
+	}
+}
+
+func TestAvailableFreshSelectionUsesConfiguredTestResultTTL(t *testing.T) {
+	proxy := &core.ProxyInfo{Name: "Proxy", Tag: "proxy", Protocol: "direct"}
+	results := map[string]*core.TestResult{
+		proxy.Tag: {
+			Tag:       proxy.Tag,
+			Latency:   50,
+			Timestamp: time.Now().Add(-10 * time.Minute),
+		},
+	}
+
+	selected, _, _ := selectFreshHealthyProxies([]*core.ProxyInfo{proxy}, results, 1, time.Now(), 5*time.Minute)
+	if len(selected) != 0 {
+		t.Fatalf("selected with short TTL = %d, want 0", len(selected))
+	}
+	selected, _, _ = selectFreshHealthyProxies([]*core.ProxyInfo{proxy}, results, 1, time.Now(), 15*time.Minute)
+	if len(selected) != 1 {
+		t.Fatalf("selected with long TTL = %d, want 1", len(selected))
+	}
+
+	toTest := proxiesNeedingTest([]*core.ProxyInfo{proxy}, results, time.Now(), 5*time.Minute)
+	if len(toTest) != 1 {
+		t.Fatalf("toTest with short TTL = %d, want 1", len(toTest))
+	}
+	toTest = proxiesNeedingTest([]*core.ProxyInfo{proxy}, results, time.Now(), 15*time.Minute)
+	if len(toTest) != 0 {
+		t.Fatalf("toTest with long TTL = %d, want 0", len(toTest))
+	}
+}
+
+func TestAvailableStatusReportsProgressAndConfig(t *testing.T) {
+	store := newTestStore(t)
+	proxies := addDirectTestSubscription(t, store, 4)
+	now := time.Now().UTC()
+	results := []*core.TestResult{
+		{Tag: proxies[0].Tag, Latency: 50, Timestamp: now},
+		{Tag: proxies[1].Tag, Err: "timeout", Timestamp: now},
+		{Tag: proxies[2].Tag, Latency: 60, Timestamp: now.Add(-10 * time.Minute)},
+	}
+	for _, result := range results {
+		if err := store.SaveTestResult(result); err != nil {
+			t.Fatalf("save result: %v", err)
+		}
+	}
+	if err := store.SaveConfig(core.AppConfig{
+		TestTarget:                     core.DefaultTestTarget,
+		TestTimeoutSeconds:             core.DefaultTestTimeoutSeconds,
+		AvailableCacheTTLSeconds:       40,
+		TestResultTTLMinutes:           5,
+		AvailableQuickProbeSeconds:     2,
+		AvailableQuickConcurrency:      11,
+		AvailableBackgroundConcurrency: 4,
+		AvailableMinWarmPoolSize:       12,
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	svc := NewService(core.NewSubscriptionManager(store))
+	impl := svc.(*service)
+	if impl.tester != nil {
+		defer impl.tester.Close()
+	}
+	poolConfig := impl.currentPoolRuntimeConfig()
+	impl.availableMu.Lock()
+	impl.availablePool = &availableCandidatePool{
+		entries: []availableCandidate{{
+			proxy:     proxies[0],
+			port:      10000,
+			latency:   50,
+			updatedAt: now,
+		}},
+		updatedAt:  now,
+		poolConfig: poolConfig,
+		generation: impl.availableGeneration.Load(),
+	}
+	impl.availableMu.Unlock()
+	impl.refreshInProgress.Store(true)
+	defer impl.refreshInProgress.Store(false)
+
+	status := impl.GetAvailableStatus()
+	if status.Stage != "background" || !status.BackgroundRefreshing {
+		t.Fatalf("status stage = %q background=%t, want background", status.Stage, status.BackgroundRefreshing)
+	}
+	if status.CandidateCount != 1 || status.Total != 4 || status.Pending != 2 || status.Tested != 2 || status.Healthy != 1 || status.Failed != 1 {
+		t.Fatalf("status counts = %+v, want candidate=1 total=4 pending=2 tested=2 healthy=1 failed=1", status)
+	}
+	if status.AvailableCacheTTLSeconds != 40 || status.TestResultTTLSeconds != 300 {
+		t.Fatalf("status ttl = %+v, want configured ttl", status)
+	}
+	if status.CandidateUpdatedAt == nil {
+		t.Fatalf("candidate updated at nil, want timestamp")
+	}
+}
+
+func TestProxiesAPIReportsTestResultTTLFields(t *testing.T) {
+	store := newTestStore(t)
+	proxies := addDirectTestSubscription(t, store, 4)
+	now := time.Now().UTC()
+	if err := store.SaveConfig(core.AppConfig{
+		TestTarget:           core.DefaultTestTarget,
+		TestTimeoutSeconds:   core.DefaultTestTimeoutSeconds,
+		TestResultTTLMinutes: 5,
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	for _, result := range []*core.TestResult{
+		{Tag: proxies[0].Tag, Latency: 50, Timestamp: now.Add(-1 * time.Minute)},
+		{Tag: proxies[1].Tag, Latency: 60, Timestamp: now.Add(-10 * time.Minute)},
+		{Tag: proxies[2].Tag, Err: "timeout", Timestamp: now.Add(-1 * time.Minute)},
+	} {
+		if err := store.SaveTestResult(result); err != nil {
+			t.Fatalf("save result: %v", err)
+		}
+	}
+
+	svc := NewService(core.NewSubscriptionManager(store))
+	if impl, ok := svc.(*service); ok && impl.tester != nil {
+		defer impl.tester.Close()
+	}
+	srv := server.NewServer(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/proxies", nil)
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET proxies status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var rows []struct {
+		Tag                     string     `json:"tag"`
+		Err                     string     `json:"err"`
+		TestTimestamp           *time.Time `json:"test_timestamp"`
+		TestAgeSeconds          int        `json:"test_age_seconds"`
+		TestTTLSeconds          int        `json:"test_ttl_seconds"`
+		TestTTLRemainingSeconds int        `json:"test_ttl_remaining_seconds"`
+		TestExpired             bool       `json:"test_expired"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode proxies: %v", err)
+	}
+	byTag := make(map[string]struct {
+		Err                     string
+		TestTimestamp           *time.Time
+		TestAgeSeconds          int
+		TestTTLSeconds          int
+		TestTTLRemainingSeconds int
+		TestExpired             bool
+	}, len(rows))
+	for _, row := range rows {
+		byTag[row.Tag] = struct {
+			Err                     string
+			TestTimestamp           *time.Time
+			TestAgeSeconds          int
+			TestTTLSeconds          int
+			TestTTLRemainingSeconds int
+			TestExpired             bool
+		}{
+			Err:                     row.Err,
+			TestTimestamp:           row.TestTimestamp,
+			TestAgeSeconds:          row.TestAgeSeconds,
+			TestTTLSeconds:          row.TestTTLSeconds,
+			TestTTLRemainingSeconds: row.TestTTLRemainingSeconds,
+			TestExpired:             row.TestExpired,
+		}
+	}
+
+	fresh := byTag[proxies[0].Tag]
+	if fresh.TestTimestamp == nil || fresh.TestTTLSeconds != 300 || fresh.TestExpired || fresh.TestTTLRemainingSeconds <= 0 {
+		t.Fatalf("fresh ttl = %+v, want valid remaining ttl", fresh)
+	}
+	expired := byTag[proxies[1].Tag]
+	if expired.TestTimestamp == nil || !expired.TestExpired || expired.TestTTLRemainingSeconds != 0 {
+		t.Fatalf("expired ttl = %+v, want expired", expired)
+	}
+	failed := byTag[proxies[2].Tag]
+	if failed.TestTimestamp == nil || failed.Err == "" || failed.TestExpired || failed.TestTTLRemainingSeconds <= 0 {
+		t.Fatalf("failed ttl = %+v, want failed cached ttl", failed)
+	}
+	untested := byTag[proxies[3].Tag]
+	if untested.TestTimestamp != nil || untested.TestTTLSeconds != 300 || untested.TestExpired {
+		t.Fatalf("untested ttl = %+v, want no timestamp and configured ttl", untested)
+	}
+}
+
+func TestAvailableProxiesUseFreshPersistedResultsForWarmPool(t *testing.T) {
+	store := newTestStore(t)
+	proxies := addDirectTestSubscription(t, store, 5)
+	now := time.Now().UTC()
+	for i, proxy := range proxies {
+		if err := store.SaveTestResult(&core.TestResult{
+			Tag:       proxy.Tag,
+			Latency:   50 + i,
+			Timestamp: now,
+		}); err != nil {
+			t.Fatalf("save test result: %v", err)
+		}
+	}
+
+	svc := NewService(core.NewSubscriptionManager(store))
+	impl := svc.(*service)
+	if impl.tester != nil {
+		defer impl.tester.Close()
+	}
+	defer impl.pool.Stop()
+
+	out, err := impl.GetAvailableProxies(2)
+	if err != nil {
+		t.Fatalf("GetAvailableProxies() error = %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("available count = %d, want 2: %+v", len(out), out)
+	}
+	for _, proxy := range out {
+		if proxy.Latency < 50 || proxy.Latency > 54 {
+			t.Fatalf("available proxy latency = %d, want persisted latency: %+v", proxy.Latency, proxy)
+		}
+	}
+
+	status := impl.pool.GetStatus()
+	if status.Count != len(proxies) {
+		t.Fatalf("pool status count = %d, want warm pool size %d", status.Count, len(proxies))
+	}
+	ports := make(map[string]bool, len(status.Instances))
+	for _, instance := range status.Instances {
+		ports[instance.HTTP] = true
+	}
+	for _, proxy := range out {
+		if !ports[proxy.HTTP] {
+			t.Fatalf("available proxy %q was not bound in pool status %+v", proxy.HTTP, status.Instances)
+		}
+	}
+}
+
+func TestAvailableProxiesSampleDifferentCombinationsFromWarmPool(t *testing.T) {
+	store := newTestStore(t)
+	proxies := addDirectTestSubscription(t, store, 6)
+	now := time.Now().UTC()
+	for i, proxy := range proxies {
+		if err := store.SaveTestResult(&core.TestResult{
+			Tag:       proxy.Tag,
+			Latency:   40 + i,
+			Timestamp: now,
+		}); err != nil {
+			t.Fatalf("save test result: %v", err)
+		}
+	}
+
+	svc := NewService(core.NewSubscriptionManager(store))
+	impl := svc.(*service)
+	if impl.tester != nil {
+		defer impl.tester.Close()
+	}
+	defer impl.pool.Stop()
+
+	seen := make(map[string]bool)
+	for i := 0; i < 20; i++ {
+		out, err := impl.GetAvailableProxies(2)
+		if err != nil {
+			t.Fatalf("GetAvailableProxies() error = %v", err)
+		}
+		if len(out) != 2 {
+			t.Fatalf("available count = %d, want 2: %+v", len(out), out)
+		}
+		tags := []string{out[0].Tag, out[1].Tag}
+		sort.Strings(tags)
+		seen[strings.Join(tags, ",")] = true
+		if len(seen) > 1 {
+			return
+		}
+	}
+	t.Fatalf("available samples did not vary across requests: %+v", seen)
 }
 
 func TestClearingPoolProxyAuthRestartsPoolWithoutAuth(t *testing.T) {
@@ -1016,6 +1332,27 @@ func TestUpstreamTestAPINoUpstreamBadRequest(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST no upstream status = %d, want 400", rec.Code)
 	}
+}
+
+func addDirectTestSubscription(t *testing.T, store *core.Store, count int) []*core.ProxyInfo {
+	t.Helper()
+
+	sub := core.NewSubscription("http://example.invalid/sub")
+	sub.Proxies = make([]*core.ProxyInfo, 0, count)
+	for i := 0; i < count; i++ {
+		tag := fmt.Sprintf("direct-%02d", i)
+		sub.Proxies = append(sub.Proxies, &core.ProxyInfo{
+			Name:       fmt.Sprintf("Direct %02d", i),
+			Tag:        tag,
+			Protocol:   "direct",
+			Server:     "127.0.0.1",
+			ServerPort: 1,
+		})
+	}
+	if err := store.AddSubscription(sub); err != nil {
+		t.Fatalf("add subscription: %v", err)
+	}
+	return sub.Proxies
 }
 
 func startSlowHTTPServer(t *testing.T, delay time.Duration) string {

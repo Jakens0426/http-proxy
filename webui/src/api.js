@@ -88,6 +88,10 @@ export function getPoolStatus() {
   return request('/pool/status')
 }
 
+export function getAvailableStatus() {
+  return request('/pool/available/status')
+}
+
 export function stopPool() {
   return request('/pool/stop', { method: 'POST' })
 }

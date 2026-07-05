@@ -30,6 +30,7 @@ type Service interface {
 	RefreshSubscription(id string) (*core.Subscription, error)
 	GetAllProxies() []*core.ProxyInfo
 	GetAvailableProxies(count int) ([]AvailableProxy, error)
+	GetAvailableStatus() AvailableStatus
 	GetPoolStatus() *core.PoolStatus
 	StopPool()
 	GetConfig() core.AppConfig
@@ -71,6 +72,23 @@ type AvailableProxy struct {
 	Tag      string `json:"tag"`
 	Latency  int    `json:"latency"`
 	Protocol string `json:"protocol"`
+}
+
+type AvailableStatus struct {
+	Stage                    string     `json:"stage"`
+	CandidateCount           int        `json:"candidate_count"`
+	CandidateUpdatedAt       *time.Time `json:"candidate_updated_at,omitempty"`
+	QuickRefreshing          bool       `json:"quick_refreshing"`
+	BackgroundRefreshing     bool       `json:"background_refreshing"`
+	Total                    int        `json:"total"`
+	Pending                  int        `json:"pending"`
+	Tested                   int        `json:"tested"`
+	Healthy                  int        `json:"healthy"`
+	Failed                   int        `json:"failed"`
+	AvailableCacheTTLSeconds int        `json:"available_cache_ttl_seconds"`
+	TestResultTTLSeconds     int        `json:"test_result_ttl_seconds"`
+	LastRefreshAt            *time.Time `json:"last_refresh_at,omitempty"`
+	LastError                string     `json:"last_error"`
 }
 
 type Server struct {
@@ -161,6 +179,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/proxies/", s.handleProxyByTag)
 	s.mux.HandleFunc(availableProxiesPath, s.handleAvailableProxies)
 	s.mux.HandleFunc(availableProxiesTextPath, s.handleAvailableProxiesText)
+	s.mux.HandleFunc("/api/pool/available/status", s.handleAvailableStatus)
 	s.mux.HandleFunc("/api/pool/status", s.handlePoolStatus)
 	s.mux.HandleFunc("/api/pool/stop", s.handlePoolStop)
 	s.mux.HandleFunc("/api/config/upstream/test", s.handleConfigUpstreamTest)
@@ -269,16 +288,25 @@ func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 	}
 	proxies := s.svc.GetAllProxies()
 	results := s.svc.GetTestResults()
+	cfg := s.svc.GetConfig()
+	testTTL := core.TestResultTTLDuration(cfg.TestResultTTLMinutes)
+	testTTLSeconds := int(testTTL / time.Second)
+	now := time.Now()
 	type ProxyView struct {
-		Name     string `json:"name"`
-		Server   string `json:"server"`
-		Port     int    `json:"port"`
-		Protocol string `json:"protocol"`
-		Tag      string `json:"tag"`
-		TLS      string `json:"tls"`
-		Latency  int    `json:"latency"`
-		Err      string `json:"err,omitempty"`
-		ShareURL string `json:"share_url,omitempty"`
+		Name                    string     `json:"name"`
+		Server                  string     `json:"server"`
+		Port                    int        `json:"port"`
+		Protocol                string     `json:"protocol"`
+		Tag                     string     `json:"tag"`
+		TLS                     string     `json:"tls"`
+		Latency                 int        `json:"latency"`
+		Err                     string     `json:"err,omitempty"`
+		ShareURL                string     `json:"share_url,omitempty"`
+		TestTimestamp           *time.Time `json:"test_timestamp,omitempty"`
+		TestAgeSeconds          int        `json:"test_age_seconds"`
+		TestTTLSeconds          int        `json:"test_ttl_seconds"`
+		TestTTLRemainingSeconds int        `json:"test_ttl_remaining_seconds"`
+		TestExpired             bool       `json:"test_expired"`
 	}
 	view := make([]ProxyView, 0, len(proxies))
 	for _, p := range proxies {
@@ -292,22 +320,44 @@ func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 		}
 		latency := -1
 		errText := ""
+		var testTimestamp *time.Time
+		testAgeSeconds := 0
+		testTTLRemainingSeconds := 0
+		testExpired := false
 		if results != nil {
 			if r, ok := results[p.Tag]; ok {
 				latency = r.Latency
 				errText = r.Err
+				if !r.Timestamp.IsZero() {
+					ts := r.Timestamp.UTC()
+					testTimestamp = &ts
+					testAgeSeconds = int(now.Sub(ts).Seconds())
+					if testAgeSeconds < 0 {
+						testAgeSeconds = 0
+					}
+					testTTLRemainingSeconds = testTTLSeconds - testAgeSeconds
+					if testTTLRemainingSeconds < 0 {
+						testTTLRemainingSeconds = 0
+					}
+					testExpired = time.Duration(testAgeSeconds)*time.Second > testTTL
+				}
 			}
 		}
 		view = append(view, ProxyView{
-			Name:     p.Name,
-			Server:   p.Server,
-			Port:     p.ServerPort,
-			Protocol: p.Protocol,
-			Tag:      p.Tag,
-			TLS:      tls,
-			Latency:  latency,
-			Err:      errText,
-			ShareURL: core.BuildShareURL(p),
+			Name:                    p.Name,
+			Server:                  p.Server,
+			Port:                    p.ServerPort,
+			Protocol:                p.Protocol,
+			Tag:                     p.Tag,
+			TLS:                     tls,
+			Latency:                 latency,
+			Err:                     errText,
+			ShareURL:                core.BuildShareURL(p),
+			TestTimestamp:           testTimestamp,
+			TestAgeSeconds:          testAgeSeconds,
+			TestTTLSeconds:          testTTLSeconds,
+			TestTTLRemainingSeconds: testTTLRemainingSeconds,
+			TestExpired:             testExpired,
 		})
 	}
 	writeJSON(w, 200, view)
@@ -425,6 +475,14 @@ func (s *Server) handlePoolStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, s.svc.GetPoolStatus())
+}
+
+func (s *Server) handleAvailableStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, 200, s.svc.GetAvailableStatus())
 }
 
 func (s *Server) handlePoolStop(w http.ResponseWriter, r *http.Request) {

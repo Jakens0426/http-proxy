@@ -20,6 +20,7 @@ func (noopService) RemoveSubscription(string) error                        { ret
 func (noopService) RefreshSubscription(string) (*core.Subscription, error) { return nil, nil }
 func (noopService) GetAllProxies() []*core.ProxyInfo                       { return nil }
 func (noopService) GetAvailableProxies(int) ([]AvailableProxy, error)      { return nil, nil }
+func (noopService) GetAvailableStatus() AvailableStatus                    { return AvailableStatus{} }
 func (noopService) GetPoolStatus() *core.PoolStatus                        { return &core.PoolStatus{} }
 func (noopService) StopPool()                                              {}
 func (noopService) GetConfig() core.AppConfig                              { return core.AppConfig{} }
@@ -195,6 +196,26 @@ func TestServerAvailableProxiesRequiresConfiguredToken(t *testing.T) {
 	}
 	if svc.availableCalls != 0 {
 		t.Fatalf("available calls = %d, want 0", svc.availableCalls)
+	}
+}
+
+func TestServerAvailableStatusUsesAdminToken(t *testing.T) {
+	svc := &authTestService{config: core.AppConfig{AdminToken: "admin-token", AvailableToken: "available-token"}}
+	srv := NewServer(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/pool/available/status?token=available-token", nil)
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status without admin token = %d, want 403", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/pool/available/status?token=available-token", nil)
+	req.Header.Set(adminTokenHeader, "admin-token")
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status with admin token = %d, want 200", rec.Code)
 	}
 }
 

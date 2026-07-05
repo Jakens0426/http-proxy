@@ -89,6 +89,12 @@ func initSchema(db *sql.DB) error {
 			upstream_proxy TEXT NOT NULL DEFAULT '',
 			test_target TEXT NOT NULL DEFAULT '',
 			test_timeout_seconds INTEGER NOT NULL DEFAULT 0,
+			available_cache_ttl_seconds INTEGER NOT NULL DEFAULT 30,
+			test_result_ttl_minutes INTEGER NOT NULL DEFAULT 120,
+			available_quick_probe_seconds INTEGER NOT NULL DEFAULT 1,
+			available_quick_concurrency INTEGER NOT NULL DEFAULT 10,
+			available_background_concurrency INTEGER NOT NULL DEFAULT 3,
+			available_min_warm_pool_size INTEGER NOT NULL DEFAULT 20,
 			updated_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS test_results (
@@ -115,10 +121,16 @@ func ensureAppConfigColumns(db *sql.DB) error {
 		return fmt.Errorf("inspect app_config schema: %w", err)
 	}
 	migrations := map[string]string{
-		"admin_token":         `ALTER TABLE app_config ADD COLUMN admin_token TEXT NOT NULL DEFAULT ''`,
-		"available_token":     `ALTER TABLE app_config ADD COLUMN available_token TEXT NOT NULL DEFAULT ''`,
-		"pool_proxy_username": `ALTER TABLE app_config ADD COLUMN pool_proxy_username TEXT NOT NULL DEFAULT ''`,
-		"pool_proxy_password": `ALTER TABLE app_config ADD COLUMN pool_proxy_password TEXT NOT NULL DEFAULT ''`,
+		"admin_token":                      `ALTER TABLE app_config ADD COLUMN admin_token TEXT NOT NULL DEFAULT ''`,
+		"available_token":                  `ALTER TABLE app_config ADD COLUMN available_token TEXT NOT NULL DEFAULT ''`,
+		"pool_proxy_username":              `ALTER TABLE app_config ADD COLUMN pool_proxy_username TEXT NOT NULL DEFAULT ''`,
+		"pool_proxy_password":              `ALTER TABLE app_config ADD COLUMN pool_proxy_password TEXT NOT NULL DEFAULT ''`,
+		"available_cache_ttl_seconds":      `ALTER TABLE app_config ADD COLUMN available_cache_ttl_seconds INTEGER NOT NULL DEFAULT 30`,
+		"test_result_ttl_minutes":          `ALTER TABLE app_config ADD COLUMN test_result_ttl_minutes INTEGER NOT NULL DEFAULT 120`,
+		"available_quick_probe_seconds":    `ALTER TABLE app_config ADD COLUMN available_quick_probe_seconds INTEGER NOT NULL DEFAULT 1`,
+		"available_quick_concurrency":      `ALTER TABLE app_config ADD COLUMN available_quick_concurrency INTEGER NOT NULL DEFAULT 10`,
+		"available_background_concurrency": `ALTER TABLE app_config ADD COLUMN available_background_concurrency INTEGER NOT NULL DEFAULT 3`,
+		"available_min_warm_pool_size":     `ALTER TABLE app_config ADD COLUMN available_min_warm_pool_size INTEGER NOT NULL DEFAULT 20`,
 	}
 	for name, statement := range migrations {
 		if columns[name] {
@@ -311,7 +323,10 @@ func (s *Store) LoadConfig() (AppConfig, error) {
 	}
 
 	row := s.db.QueryRow(
-		`SELECT upstream_proxy, test_target, test_timeout_seconds, admin_token, available_token, pool_proxy_username, pool_proxy_password
+		`SELECT upstream_proxy, test_target, test_timeout_seconds, admin_token, available_token,
+			pool_proxy_username, pool_proxy_password, available_cache_ttl_seconds, test_result_ttl_minutes,
+			available_quick_probe_seconds, available_quick_concurrency, available_background_concurrency,
+			available_min_warm_pool_size
 		 FROM app_config WHERE id = ?`,
 		appConfigID,
 	)
@@ -324,6 +339,12 @@ func (s *Store) LoadConfig() (AppConfig, error) {
 		&stored.AvailableToken,
 		&stored.PoolProxyUsername,
 		&stored.PoolProxyPassword,
+		&stored.AvailableCacheTTLSeconds,
+		&stored.TestResultTTLMinutes,
+		&stored.AvailableQuickProbeSeconds,
+		&stored.AvailableQuickConcurrency,
+		&stored.AvailableBackgroundConcurrency,
+		&stored.AvailableMinWarmPoolSize,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return cfg, nil
@@ -343,9 +364,11 @@ func (s *Store) SaveConfig(cfg AppConfig) error {
 	_, err := s.db.Exec(
 		`INSERT INTO app_config (
 			id, upstream_proxy, test_target, test_timeout_seconds, admin_token, available_token,
-			pool_proxy_username, pool_proxy_password, updated_at
+			pool_proxy_username, pool_proxy_password, available_cache_ttl_seconds, test_result_ttl_minutes,
+			available_quick_probe_seconds, available_quick_concurrency, available_background_concurrency,
+			available_min_warm_pool_size, updated_at
 		 )
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 			upstream_proxy = excluded.upstream_proxy,
 			test_target = excluded.test_target,
@@ -354,6 +377,12 @@ func (s *Store) SaveConfig(cfg AppConfig) error {
 			available_token = excluded.available_token,
 			pool_proxy_username = excluded.pool_proxy_username,
 			pool_proxy_password = excluded.pool_proxy_password,
+			available_cache_ttl_seconds = excluded.available_cache_ttl_seconds,
+			test_result_ttl_minutes = excluded.test_result_ttl_minutes,
+			available_quick_probe_seconds = excluded.available_quick_probe_seconds,
+			available_quick_concurrency = excluded.available_quick_concurrency,
+			available_background_concurrency = excluded.available_background_concurrency,
+			available_min_warm_pool_size = excluded.available_min_warm_pool_size,
 			updated_at = excluded.updated_at`,
 		appConfigID,
 		cfg.UpstreamProxy,
@@ -363,6 +392,12 @@ func (s *Store) SaveConfig(cfg AppConfig) error {
 		cfg.AvailableToken,
 		cfg.PoolProxyUsername,
 		cfg.PoolProxyPassword,
+		cfg.AvailableCacheTTLSeconds,
+		cfg.TestResultTTLMinutes,
+		cfg.AvailableQuickProbeSeconds,
+		cfg.AvailableQuickConcurrency,
+		cfg.AvailableBackgroundConcurrency,
+		cfg.AvailableMinWarmPoolSize,
 		formatDBTime(time.Now().UTC()),
 	)
 	return err
@@ -592,6 +627,12 @@ func normalizeStoredConfig(cfg AppConfig) AppConfig {
 		cfg.TestTarget = DefaultTestTarget
 	}
 	cfg.TestTimeoutSeconds = NormalizeTestTimeoutSeconds(cfg.TestTimeoutSeconds, DefaultTestTimeoutSeconds)
+	cfg.AvailableCacheTTLSeconds = NormalizeAvailableCacheTTLSeconds(cfg.AvailableCacheTTLSeconds, DefaultAvailableCacheTTLSeconds)
+	cfg.TestResultTTLMinutes = NormalizeTestResultTTLMinutes(cfg.TestResultTTLMinutes, DefaultTestResultTTLMinutes)
+	cfg.AvailableQuickProbeSeconds = NormalizeAvailableQuickProbeSeconds(cfg.AvailableQuickProbeSeconds, DefaultAvailableQuickProbeSeconds)
+	cfg.AvailableQuickConcurrency = NormalizeAvailableQuickConcurrency(cfg.AvailableQuickConcurrency, DefaultAvailableQuickConcurrency)
+	cfg.AvailableBackgroundConcurrency = NormalizeAvailableBackgroundConcurrency(cfg.AvailableBackgroundConcurrency, DefaultAvailableBackgroundConcurrency)
+	cfg.AvailableMinWarmPoolSize = NormalizeAvailableMinWarmPoolSize(cfg.AvailableMinWarmPoolSize, DefaultAvailableMinWarmPoolSize)
 	return cfg
 }
 
