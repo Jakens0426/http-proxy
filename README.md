@@ -1,5 +1,7 @@
 # 代理中转器
 
+[![Docker Image CI](https://github.com/Jakens0426/http-proxy/actions/workflows/docker.yml/badge.svg)](https://github.com/Jakens0426/http-proxy/actions/workflows/docker.yml)
+
 嵌入式 sing-box 代理池：将 VLESS/Trojan/SS 订阅转成本地 HTTP 代理，零子进程。
 
 ## 架构
@@ -215,6 +217,31 @@ go run .
 
 Go 程序会同时提供后端 API 和嵌入式前端，访问
 `http://127.0.0.1:9090`。不要用 Vite dev server 作为完整应用的启动或验收方式。
+
+### CI Docker 构建
+
+推送到 `main` 分支或 `v*` 标签时，GitHub Actions 自动构建 Docker 镜像并推送到
+ghcr.io：
+
+```bash
+docker pull ghcr.io/Jakens0426/http-proxy:latest
+```
+
+使用 docker-compose 运行（需先创建 `data/` 目录）：
+
+```yaml
+services:
+  http-proxy:
+    image: ghcr.io/Jakens0426/http-proxy:latest
+    container_name: http-proxy
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+```
 
 ## API
 
