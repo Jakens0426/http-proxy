@@ -13,7 +13,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Push-Location $root
 try {
-    go build -tags with_utls -ldflags "-X main.Version=$version" -o $binary .
+    go build -tags "with_utls prod" -ldflags "-X main.Version=$version" -o $binary .
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }

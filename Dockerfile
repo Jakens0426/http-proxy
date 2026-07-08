@@ -16,7 +16,7 @@ RUN go mod download
 
 COPY . .
 COPY --from=webui /webui/dist ./webui/dist
-RUN CGO_ENABLED=0 go build -tags with_utls -ldflags "-s -w" -o http-proxy .
+RUN CGO_ENABLED=0 go build -tags "with_utls prod" -ldflags "-s -w" -o http-proxy .
 
 FROM alpine:3.21
 

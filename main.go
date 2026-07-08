@@ -1,10 +1,8 @@
 package main
 
 import (
-	"embed"
 	"flag"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -14,9 +12,6 @@ import (
 )
 
 var Version = "1.0.0"
-
-//go:embed webui/dist
-var webUI embed.FS
 
 func main() {
 	versionFlag := flag.Bool("version", false, "print version and exit")
@@ -51,10 +46,7 @@ func main() {
 	totalProxies := len(subMgr.GetAllProxies())
 	log.Printf("Total proxies from all subscriptions: %d", totalProxies)
 
-	distFS, err := fs.Sub(webUI, "webui/dist")
-	if err != nil {
-		log.Fatalf("could not load embedded web UI: %v", err)
-	}
+	distFS := webFS()
 
 	srv := server.NewServer(svc, distFS)
 	addr := "127.0.0.1:9090"
