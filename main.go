@@ -49,7 +49,10 @@ func main() {
 	distFS := webFS()
 
 	srv := server.NewServer(svc, distFS)
-	addr := "127.0.0.1:9090"
+	addr := os.Getenv("LISTEN_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:9090"
+	}
 	log.Printf("代理中转器 UI: http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, srv))
 }

@@ -9,3 +9,4 @@ services:
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
+      - LISTEN_ADDR=0.0.0.0:9090
